@@ -5,6 +5,7 @@ Native KDE Plasma 6 system tray widget to mute individual applications in Steam 
 ## Install
 
 ```bash
+git clone https://github.com/TimxSan/steam-recording-audio-control
 ./install.sh
 ```
 
