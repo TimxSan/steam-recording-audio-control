@@ -1,0 +1,21 @@
+{
+  "KPlugin": {
+    "Id": "org.cachy.steamaudiocontrol",
+    "Name": "Steam Recording Audio Control",
+    "Description": "Mute individual audio sources in Steam recordings",
+    "Icon": "org.cachy.steamaudiocontrol",
+    "Category": "Multimedia",
+    "Version": "1.0",
+    "License": "MIT",
+    "EnabledByDefault": true,
+    "ServiceTypes": [
+      "Plasma/Applet"
+    ],
+    "Description[de]": "Audioquellen für Steam-Aufnahmen einzeln stummschalten"
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-NotificationArea": "true",
+  "X-Plasma-NotificationAreaCategory": "ApplicationStatus",
+  "X-Plasma-MainScript": "ui/main.qml"
+}
