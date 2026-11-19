@@ -19,8 +19,6 @@ else
   kpackagetool6 --type Plasma/Applet --install "$root/plasmoid"
 fi
 
-python3 "$root/install-fallback-icons.py" "$widget_id" >/dev/null 2>&1 || true
-
 if command -v qdbus6 >/dev/null 2>&1; then
   qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat "$root/enable-tray.js")" >/dev/null 2>&1 || true
 fi

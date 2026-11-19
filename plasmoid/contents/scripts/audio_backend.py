@@ -4,7 +4,6 @@ import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from app_icons import IconResolver
 GENERIC_APPS = {'', 'wine', 'wine64', 'wine64-preloader', 'pipewire', 'alsa', 'pulse audio', 'audio stream'}
 
 
@@ -42,10 +41,7 @@ def channel(port):
 class Source:
     key: str
     name: str
-    icon: str = ''
     nodes: set = field(default_factory=set)
-    pids: set = field(default_factory=set)
-    app_ids: set = field(default_factory=set)
     binaries: set = field(default_factory=set)
 
 
@@ -130,7 +126,6 @@ class Graph:
 
     def sources(self):
         found = {}
-        icons = IconResolver()
         for node_id, node in self.nodes.items():
             p = props(node)
             if p.get('media.class') != 'Stream/Output/Audio':
@@ -155,18 +150,8 @@ class Graph:
                 key = str(node_id)
             source = found.setdefault(key, Source(key, label))
             source.nodes.add(node_id)
-            try:
-                pid = int(p.get('application.process.id', 0))
-                if pid > 0:
-                    source.pids.add(pid)
-            except (TypeError, ValueError):
-                pass
-            if app_id:
-                source.app_ids.add(app_id)
             if binary:
                 source.binaries.add(binary)
-            if not source.icon:
-                source.icon = icons.resolve(p, key=key, name=label)
         return found
 
     def input_pairs(self, steam_id):
@@ -316,11 +301,11 @@ class AudioController:
                 if output is not None and input_port is not None:
                     old_pairs.add((output, input_port))
             current = graph.input_pairs(self.steam_id)
+            for source_port, target_port in sorted(old_pairs - set(current.values())):
+                run('pw-link', str(source_port), str(target_port))
             for link_id, pair in current.items():
                 if pair not in old_pairs:
                     run('pw-link', '-d', str(link_id))
-            for source_port, target_port in sorted(old_pairs - set(current.values())):
-                run('pw-link', str(source_port), str(target_port))
             self.routing = False
             self.original = []
             self.error = ''
