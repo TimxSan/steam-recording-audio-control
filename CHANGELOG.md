@@ -15,6 +15,7 @@
 - Show microphones in a separate section above the other audio sources.
 - Keep mute icons at full opacity while Save mutes is being updated if muting is available.
 - Queue widget actions in order and keep mute controls responsive while saving preferences.
+- Clarify the README setup and usage instructions and document how to update the widget from Git.
 
 ## 1.0 — 2026-11-19
 
