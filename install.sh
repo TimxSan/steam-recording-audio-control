@@ -2,7 +2,7 @@
 set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 widget_id="org.cachy.steamaudiocontrol"
-for dependency in kpackagetool6 pw-dump pw-link python3; do
+for dependency in kpackagetool6 pw-dump pw-link pw-cli python3; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "$dependency" >&2
     exit 1

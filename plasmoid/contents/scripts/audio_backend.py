@@ -4,7 +4,10 @@ import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from app_icons import ApplicationResolver
+
 GENERIC_APPS = {'', 'wine', 'wine64', 'wine64-preloader', 'pipewire', 'alsa', 'pulse audio', 'audio stream'}
+MICROPHONE_KEY = 'device:steam-microphone'
 
 
 def run(*args):
@@ -43,14 +46,21 @@ class Source:
     name: str
     nodes: set = field(default_factory=set)
     binaries: set = field(default_factory=set)
+    icon: str = ''
+    application_name: str = ''
+    pids: set = field(default_factory=set)
+    app_id: str = ''
 
 
 class Graph:
     def __init__(self, dump):
         self.nodes = {}
+        self.clients = {}
         self.ports = {}
         self.links = {}
         self.node_ports = defaultdict(list)
+        self.cookie = None
+        self.default_source = ''
         for item in dump:
             kind = str(item.get('type', '')).split(':')[-1]
             ident = number(item.get('id'))
@@ -58,6 +68,14 @@ class Graph:
                 continue
             if kind == 'Node':
                 self.nodes[ident] = item
+            elif kind == 'Client':
+                self.clients[ident] = item
+            elif kind == 'Core':
+                self.cookie = item.get('info', {}).get('cookie')
+            elif kind == 'Metadata' and item.get('props', {}).get('metadata.name') == 'default':
+                for setting in item.get('metadata', []):
+                    if setting.get('key') == 'default.audio.source' and isinstance(setting.get('value'), dict):
+                        self.default_source = setting['value'].get('name', '')
             elif kind == 'Port':
                 self.ports[ident] = item
                 parent = number(props(item).get('node.id'))
@@ -89,21 +107,27 @@ class Graph:
                 or (direction == 'out' and self.port_name(p).startswith(('output_', 'monitor_')))
                 or (direction == 'in' and self.port_name(p).startswith(('input_', 'playback_')))]
 
+    def is_steam_capture_candidate(self, node_id):
+        p = props(self.nodes.get(node_id, {}))
+        if p.get('media.class') != 'Stream/Input/Audio':
+            return False
+        media = str(p.get('media.name', '')).lower()
+        if any(label in media for label in ('audio recorder', 'voiceengine', 'microphone')):
+            return False
+        return any('steam' in str(p.get(key, '')).lower() for key in (
+            'node.name', 'media.name', 'application.name',
+            'application.process.binary', 'application.id', 'node.description',
+        ))
+
     def steam_capture(self):
         best = None
         best_score = 0
         for node_id, node in self.nodes.items():
-            p = props(node)
-            if p.get('media.class') != 'Stream/Input/Audio':
+            if not self.is_steam_capture_candidate(node_id):
                 continue
+            p = props(node)
             name = str(p.get('node.name', '')).lower()
             media = str(p.get('media.name', '')).lower()
-            process = ' '.join(str(p.get(k, '')).lower() for k in (
-                'application.name', 'application.process.binary', 'application.id', 'node.description'))
-            if 'steam' not in process and 'steam' not in name and 'steam' not in media:
-                continue
-            if 'audio recorder' in media or 'voiceengine' in media or 'microphone' in media:
-                continue
             score = 10
             if media == 'steam' or name == 'steam' or name.startswith('steam-') and media == 'steam':
                 score += 50
@@ -124,8 +148,55 @@ class Graph:
                 best_score = score
         return best if best_score >= 60 else None
 
+    def steam_microphone_inputs(self):
+        # Steam Game Recording opens a separate input for the microphone.
+        inputs = {}
+        for node_id, node in self.nodes.items():
+            p = props(node)
+            if (p.get('media.class') != 'Stream/Input/Audio'
+                    or str(p.get('media.name', '')).casefold() != 'audio recorder'
+                    or str(p.get('media.role', '')).casefold() != 'game'):
+                continue
+            identities = (
+                str(p.get('application.name', '')).casefold(),
+                str(p.get('application.id', '')).casefold(),
+                str(p.get('application.process.binary', '')).rsplit('/', 1)[-1].casefold(),
+            )
+            serial = p.get('object.serial')
+            if serial is not None and {'steam', 'com.valvesoftware.steam'}.intersection(identities):
+                inputs[f'{self.cookie}:{serial}'] = node_id
+        return inputs
+
+    def input_mute(self, node_id):
+        for entry in self.nodes[node_id]['info'].get('params', {}).get('Props', []):
+            mute = entry.get('mute')
+            if isinstance(mute, bool):
+                return mute
+        return None
+
+    def microphone(self, capture_nodes):
+        devices = {node_id: props(node) for node_id, node in self.nodes.items()
+                   if props(node).get('media.class') in ('Audio/Source', 'Audio/Source/Virtual')}
+        if not devices and not capture_nodes:
+            return None
+
+        by_target = {str(device[key]): device for device in devices.values()
+                     for key in ('node.name', 'object.serial') if key in device}
+        candidates = [by_target.get(str(props(self.nodes[node_id]).get('target.object')))
+                      for node_id in capture_nodes]
+        for node_id in capture_nodes:
+            candidates.extend(devices.get(number(props(self.ports[output]).get('node.id')))
+                              for output, _ in self.input_pairs(node_id).values() if output in self.ports)
+        candidates.append(by_target.get(self.default_source))
+        if len(devices) == 1:
+            candidates.extend(devices.values())
+        device = next((candidate for candidate in candidates if candidate is not None), {})
+        name = str(device.get('node.description') or device.get('node.nick') or '')
+        return Source(MICROPHONE_KEY, name, icon='audio-input-microphone')
+
     def sources(self):
         found = {}
+        applications = ApplicationResolver()
         for node_id, node in self.nodes.items():
             p = props(node)
             if p.get('media.class') != 'Stream/Output/Audio':
@@ -150,8 +221,22 @@ class Graph:
                 key = str(node_id)
             source = found.setdefault(key, Source(key, label))
             source.nodes.add(node_id)
-            if binary:
-                source.binaries.add(binary)
+            client = props(self.clients.get(number(p.get('client.id')), {}))
+            for metadata in (p, client):
+                pid = number(metadata.get('application.process.id'))
+                if pid > 0:
+                    source.pids.add(pid)
+                process = str(metadata.get('application.process.binary') or '').rsplit('/', 1)[-1].strip()
+                if process:
+                    source.binaries.add(process)
+            application = applications.resolve(p, client)
+            source.application_name = source.application_name or application.name
+            source.app_id = source.app_id or application.app_id or app_id or str(
+                p.get('pipewire.access.portal.app_id') or client.get('application.id')
+                or client.get('pipewire.access.portal.app_id') or ''
+            )
+            if not source.icon or application.icon.startswith('/') and not source.icon.startswith('/'):
+                source.icon = application.icon
         return found
 
     def input_pairs(self, steam_id):
@@ -209,6 +294,9 @@ class AudioController:
     def __init__(self):
         self.steam_id = None
         self.muted = set()
+        self.microphone_muted = False
+        self.microphone_mutes = set()  # Capture streams muted by the widget.
+        self.microphone_active = False
         self.sources = {}
         self.is_active = False
         self.routing = False
@@ -221,46 +309,78 @@ class AudioController:
             graph = Graph.read()
             self._graph = graph
             steam = graph.steam_capture()
-            if steam is None and self.steam_id in graph.nodes:
+            previous_capture = graph.is_steam_capture_candidate(self.steam_id)
+            if steam is None and previous_capture:
                 steam = self.steam_id
             if steam != self.steam_id:
-                if self.routing and self.steam_id in graph.nodes:
+                if self.routing and previous_capture:
                     self.restore(graph)
+                if self.steam_id is not None:
+                    self.muted.clear()
+                    self.microphone_muted = False
                 self.steam_id = steam
                 self.routing = False
                 self.original = []
-                self.muted.clear()
                 self.error = ''
             self.is_active = steam is not None
-            self.sources = graph.sources() if self.is_active else {}
-            if self.is_active and self.muted:
-                self.reconcile(graph)
-            elif self.routing:
-                self.restore(graph)
-        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            self.sources = graph.sources()
+            microphone_inputs = graph.steam_microphone_inputs()
+            microphone = graph.microphone(microphone_inputs.values())
+            if microphone is not None:
+                self.sources[microphone.key] = microphone
+            self.microphone_active = self.is_active and any(
+                graph.input_mute(node_id) is not None for node_id in microphone_inputs.values()
+            )
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             self.error = str(exc)[:180]
             self._graph = None
             self.is_active = False
+            self.microphone_active = False
             self.sources = {}
+
+    def is_muted(self, key):
+        return self.microphone_muted if key == MICROPHONE_KEY else key in self.muted
 
     def set_muted(self, key, mute):
         self.error = ''
+        if key == MICROPHONE_KEY:
+            self.microphone_muted = mute
+            return
         if mute:
             self.muted.add(key)
         else:
             self.muted.discard(key)
-        if not self.is_active or self._graph is None:
-            return
-        if self.muted:
-            self.reconcile(self._graph)
-        elif self.routing:
-            self.restore(self._graph)
 
     def reset(self):
         self.error = ''
         self.muted.clear()
-        if self.is_active and self.routing and self._graph is not None:
+        self.microphone_muted = False
+
+    def apply_mutes(self):
+        if self._graph is None:
+            return
+        if self.is_active and self.muted.intersection(self.sources):
+            self.reconcile(self._graph)
+        elif self.routing:
             self.restore(self._graph)
+        if self.microphone_muted or self.microphone_mutes:
+            self.update_microphone(self._graph, self.is_active and self.microphone_muted)
+
+    def update_microphone(self, graph, mute):
+        inputs = graph.steam_microphone_inputs()
+        self.microphone_mutes.intersection_update(inputs)
+        try:
+            for capture, node_id in inputs.items():
+                current = graph.input_mute(node_id)
+                if mute and current is False:
+                    run('pw-cli', 'set-param', str(node_id), 'Props', '{ mute: true }')
+                    self.microphone_mutes.add(capture)
+                elif not mute and capture in self.microphone_mutes:
+                    if current is not False:
+                        run('pw-cli', 'set-param', str(node_id), 'Props', '{ mute: false }')
+                    self.microphone_mutes.remove(capture)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            self.error = self.error or 'Microphone control: ' + str(exc)[:140]
 
     def reconcile(self, graph):
         if self.steam_id is None:
@@ -279,7 +399,7 @@ class AudioController:
             for source_port, target_port in sorted(desired - actual):
                 run('pw-link', str(source_port), str(target_port))
             self.error = ''
-        except (OSError, RuntimeError) as exc:
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             message = 'Audio routing: ' + str(exc)[:140]
             self.muted.clear()
             self.restore()
@@ -309,7 +429,7 @@ class AudioController:
             self.routing = False
             self.original = []
             self.error = ''
-        except (OSError, RuntimeError) as exc:
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             self.error = 'Restore failed: ' + str(exc)[:140]
 
 
