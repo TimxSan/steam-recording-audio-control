@@ -33,9 +33,7 @@ The installer upgrades the widget in place and keeps your saved mute selections.
 
 Open the widget from the system tray and toggle the mute icon next to an app or the microphone. The list shows detected sources even while Steam is idle. App icons are used when available, with bundled category icons as a fallback.
 
-- Enable **Save mutes** to choose sources before recording and apply the same selections automatically to future recordings.
-- Leave **Save mutes** off to mute sources for the current recording only.
-- Select **Include all audio** to clear all mute selections, including saved ones.
+Mute selections are saved automatically and applied when Steam records those sources. Select **Include all audio** to clear all saved mutes.
 
 ## Uninstall
 

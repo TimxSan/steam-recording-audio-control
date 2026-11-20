@@ -14,7 +14,6 @@ PlasmoidItem {
 
     property bool recordingActive: false
     property bool microphoneActive: false
-    property bool rememberMutes: false
     property bool hasMutes: false
     property var apps: []
     property string errorMessage: ""
@@ -121,13 +120,7 @@ PlasmoidItem {
     }
 
     function optimisticUpdate(action, key) {
-        if (action === "remember-mutes") {
-            rememberMutes = key === "on";
-            if (rememberMutes || recordingActive) {
-                return;
-            }
-        }
-        if (action === "reset" || action === "remember-mutes") {
+        if (action === "reset") {
             hasMutes = false;
         }
         var updated = [];
@@ -136,7 +129,7 @@ PlasmoidItem {
             if (action === "mute" && next.key === key) {
                 next.muted = !Boolean(next.muted);
                 hasMutes = hasMutes || next.muted;
-            } else if (action === "reset" || action === "remember-mutes") {
+            } else if (action === "reset") {
                 next.muted = false;
             }
             updated.push(next);
@@ -183,7 +176,6 @@ PlasmoidItem {
         }
         recordingActive = Boolean(response.active);
         microphoneActive = Boolean(response.microphoneActive);
-        rememberMutes = Boolean(response.rememberMutes);
         hasMutes = Boolean(response.hasMutes);
         apps = response.apps || [];
         syncVisibleRows();
@@ -302,24 +294,12 @@ PlasmoidItem {
             anchors.fill: parent
             spacing: 0
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing
-                Layout.rightMargin: Kirigami.Units.smallSpacing
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 2.6
-
-                PlasmaComponents.Switch {
-                    Layout.fillWidth: true
-                    text: i18n("Save mutes")
-                    checked: root.rememberMutes
-                    onToggled: root.request("remember-mutes", checked ? "on" : "off")
-                }
-
-                PlasmaComponents.ToolButton {
-                    text: i18n("Include all audio")
-                    enabled: root.hasMutes
-                    onClicked: root.request("reset", "")
-                }
+            PlasmaComponents.ToolButton {
+                Layout.alignment: Qt.AlignRight
+                Layout.margins: Kirigami.Units.smallSpacing
+                text: i18n("Include all audio")
+                enabled: root.hasMutes
+                onClicked: root.request("reset", "")
             }
 
             PlasmaComponents.Label {
@@ -485,7 +465,6 @@ PlasmoidItem {
                             SourceActionButton {
                                 text: sourceRow.muted ? i18n("Unmute") : i18n("Mute")
                                 iconFile: Qt.resolvedUrl(sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg")
-                                enabled: root.rememberMutes || root.recordingActive
                                 onClicked: root.request("mute", sourceRow.key)
                             }
                         }

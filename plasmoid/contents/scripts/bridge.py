@@ -39,8 +39,6 @@ def take_state(controller):
         'steam_id': controller.steam_id,
         'routing': controller.routing,
         'original': controller.original,
-        'muted': sorted(controller.muted),
-        'microphone_muted': controller.microphone_muted,
         'microphone_mutes': sorted(controller.microphone_mutes),
     }
 
@@ -49,8 +47,6 @@ def restore_state(controller, state):
     controller.steam_id = state.get('steam_id')
     controller.routing = bool(state.get('routing', False))
     controller.original = state.get('original', [])
-    controller.muted = set(state.get('muted', []))
-    controller.microphone_muted = bool(state.get('microphone_muted', False))
     controller.microphone_mutes = set(state.get('microphone_mutes', []))
 
 
@@ -72,39 +68,30 @@ def process(action, key):
             save(STATE_FILE, take_state(ctl) if ctl.error else {})
             return {'error': ctl.error}
         settings = load(CONFIG_FILE, {})
-        remember_mutes = settings.get('remember_mutes') is True
-
         state = load(STATE_FILE, {})
         restore_state(ctl, state)
         ctl.refresh()
-        if remember_mutes:
-            saved_mutes = string_set(settings.get('muted'))
-            ctl.muted = saved_mutes - {MICROPHONE_KEY}
-            ctl.microphone_muted = MICROPHONE_KEY in saved_mutes
-        elif ctl.steam_id is None:
-            ctl.muted.clear()
-            ctl.microphone_muted = False
 
-        save_mutes = False
-        if action == 'remember-mutes' and key in ('on', 'off'):
-            remember_mutes = key == 'on'
-            save_mutes = True
-        elif action == 'mute' and (ctl.is_active or remember_mutes) and key in ctl.sources:
-            ctl.set_muted(key, not ctl.is_muted(key))
-            save_mutes = remember_mutes
-        elif action == 'reset':
-            ctl.reset()
-            save_mutes = remember_mutes
+        muted = string_set(settings.get('muted'))
+        if 'muted' not in settings and ctl.is_active and ctl.steam_id == state.get('steam_id'):
+            # Preserve legacy mutes when upgrading during the same recording.
+            muted = string_set(state.get('muted'))
+            if state.get('microphone_muted') is True:
+                muted.add(MICROPHONE_KEY)
+        ctl.muted = muted - {MICROPHONE_KEY}
+        ctl.microphone_muted = MICROPHONE_KEY in muted
 
-        if save_mutes:
-            settings['remember_mutes'] = remember_mutes
-            if remember_mutes:
-                muted = ctl.muted | ({MICROPHONE_KEY} if ctl.microphone_muted else set())
-                settings['muted'] = sorted(muted)
+        changed_mutes = action == 'reset' or (action == 'mute' and key in ctl.sources)
+        if changed_mutes:
+            if action == 'reset':
+                ctl.reset()
             else:
-                settings.pop('muted', None)
-                if ctl.steam_id is None:
-                    ctl.reset()
+                ctl.set_muted(key, not ctl.is_muted(key))
+            muted = ctl.muted | ({MICROPHONE_KEY} if ctl.microphone_muted else set())
+
+        if changed_mutes or (muted and 'muted' not in settings):
+            settings.pop('remember_mutes', None)
+            settings['muted'] = sorted(muted)
             save(CONFIG_FILE, settings)
 
         ctl.apply_mutes()
@@ -129,9 +116,7 @@ def process(action, key):
         ]
         return {
             'active': bool(ctl.is_active),
-            'rememberMutes': remember_mutes,
-            'hasMutes': bool(ctl.muted or ctl.microphone_muted
-                             or (remember_mutes and string_set(settings.get('muted')))),
+            'hasMutes': bool(muted),
             'microphoneActive': ctl.microphone_active,
             'apps': apps,
             'error': ctl.error,
@@ -140,7 +125,7 @@ def process(action, key):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['status', 'mute', 'remember-mutes', 'reset', 'restore'])
+    parser.add_argument('action', choices=['status', 'mute', 'reset', 'restore'])
     parser.add_argument('key', nargs='?', default='')
     parser.add_argument('nonce', nargs='?', default='0')
     args = parser.parse_args()
