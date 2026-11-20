@@ -17,6 +17,7 @@
 - Queue widget actions in order and keep mute controls responsive while saving preferences.
 - Clarify the README setup and usage instructions and document how to update the widget from Git.
 - Remove the Save mutes switch and always save mute selections for future Steam recordings.
+- Left-align the Include all audio button with equal spacing above and below it.
 
 ## 1.0 — 2026-11-19
 

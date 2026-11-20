@@ -295,23 +295,12 @@ PlasmoidItem {
             spacing: 0
 
             PlasmaComponents.ToolButton {
-                Layout.alignment: Qt.AlignRight
+                Layout.alignment: Qt.AlignLeft
                 Layout.margins: Kirigami.Units.smallSpacing
+                Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                 text: i18n("Include all audio")
                 enabled: root.hasMutes
                 onClicked: root.request("reset", "")
-            }
-
-            PlasmaComponents.Label {
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing * 2
-                Layout.rightMargin: Kirigami.Units.smallSpacing * 2
-                Layout.bottomMargin: Kirigami.Units.smallSpacing
-                visible: root.errorMessage.length > 0
-                text: root.errorMessage
-                wrapMode: Text.WordWrap
-                color: Kirigami.Theme.negativeTextColor
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
 
             Item {
@@ -478,6 +467,18 @@ PlasmoidItem {
                     color: Kirigami.Theme.disabledTextColor
                     text: i18n("No audio sources detected")
                 }
+            }
+
+            PlasmaComponents.Label {
+                Layout.fillWidth: true
+                Layout.margins: Kirigami.Units.smallSpacing
+                Layout.leftMargin: Kirigami.Units.smallSpacing * 2
+                Layout.rightMargin: Kirigami.Units.smallSpacing * 2
+                visible: root.errorMessage.length > 0
+                text: root.errorMessage
+                wrapMode: Text.WordWrap
+                color: Kirigami.Theme.negativeTextColor
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
         }
     }
