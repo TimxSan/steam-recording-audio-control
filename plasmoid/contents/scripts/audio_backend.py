@@ -8,6 +8,9 @@ from app_icons import ApplicationResolver
 
 GENERIC_APPS = {'', 'wine', 'wine64', 'wine64-preloader', 'pipewire', 'alsa', 'pulse audio', 'audio stream'}
 MICROPHONE_KEY = 'device:steam-microphone'
+STEAM_IDENTITIES = {'steam', 'steam.sh', 'com.valvesoftware.steam'}
+MANAGED_LINK = 'steam-audio-control.managed'
+PIPEWIRE_ERRORS = (OSError, RuntimeError, ValueError, subprocess.SubprocessError)
 
 
 def run(*args):
@@ -25,19 +28,21 @@ def number(value):
 
 
 def props(obj):
-    return obj.get('info', {}).get('props', {}) or {}
+    return (obj.get('info') or {}).get('props') or {}
 
 
 def channel(port):
     p = props(port)
-    ch = str(p.get('audio.channel', '')).upper()
-    if ch in ('FL', 'FR', 'MONO'):
+    ch = str(p.get('audio.channel') or '').upper()
+    if ch and ch not in ('UNK', 'UNKNOWN', 'NA'):
         return ch
-    name = str(p.get('port.name', '')).upper()
-    for ending in ('FL', 'FR', 'MONO'):
-        if name.endswith('_' + ending):
-            return ending
-    return ''
+    ending = str(p.get('port.name', '')).upper().rsplit('_', 1)[-1]
+    return ending if ending in ('FL', 'FR', 'MONO', 'FC', 'LFE', 'RL', 'RR', 'SL', 'SR', 'RC', 'FLC', 'FRC') else ''
+
+
+def connect_ports(output, target, managed=False):
+    args = ('-p', json.dumps({MANAGED_LINK: True})) if managed else ()
+    run('pw-link', *args, str(output), str(target))
 
 
 @dataclass
@@ -54,12 +59,16 @@ class Source:
 
 class Graph:
     def __init__(self, dump):
+        if not isinstance(dump, list):
+            raise ValueError('Invalid PipeWire graph')
         self.nodes = {}
         self.clients = {}
         self.ports = {}
         self.links = {}
+        self.managed_links = set()
         self.node_ports = defaultdict(list)
         self.cookie = None
+        self.default_sink = ''
         self.default_source = ''
         for item in dump:
             kind = str(item.get('type', '')).split(':')[-1]
@@ -71,11 +80,16 @@ class Graph:
             elif kind == 'Client':
                 self.clients[ident] = item
             elif kind == 'Core':
-                self.cookie = item.get('info', {}).get('cookie')
+                self.cookie = (item.get('info') or {}).get('cookie')
             elif kind == 'Metadata' and item.get('props', {}).get('metadata.name') == 'default':
                 for setting in item.get('metadata', []):
-                    if setting.get('key') == 'default.audio.source' and isinstance(setting.get('value'), dict):
-                        self.default_source = setting['value'].get('name', '')
+                    value = setting.get('value')
+                    if not isinstance(value, dict):
+                        continue
+                    if setting.get('key') == 'default.audio.source':
+                        self.default_source = value.get('name', '')
+                    elif setting.get('key') == 'default.audio.sink':
+                        self.default_sink = value.get('name', '')
             elif kind == 'Port':
                 self.ports[ident] = item
                 parent = number(props(item).get('node.id'))
@@ -91,65 +105,83 @@ class Graph:
                     input_port = number(p.get('link.input.port'))
                 if output >= 0 and input_port >= 0:
                     self.links[ident] = (output, input_port)
+                    if p.get(MANAGED_LINK) in (True, 'true', '1'):
+                        self.managed_links.add(ident)
 
     @classmethod
     def read(cls):
-        return cls(json.loads(run('pw-dump')))
+        graph = cls(json.loads(run('pw-dump')))
+        if graph.cookie is None:
+            raise RuntimeError('Cannot identify the PipeWire server')
+        return graph
 
     def port_name(self, ident):
         return str(props(self.ports.get(ident, {})).get('port.name', ''))
+
+    def port_node(self, ident):
+        return number(props(self.ports.get(ident, {})).get('node.id'))
 
     def ports_for(self, node_id, direction=None):
         ids = self.node_ports.get(node_id, [])
         if direction is None:
             return ids
-        return [p for p in ids if str(props(self.ports[p]).get('port.direction', '')).lower() == direction
-                or (direction == 'out' and self.port_name(p).startswith(('output_', 'monitor_')))
-                or (direction == 'in' and self.port_name(p).startswith(('input_', 'playback_')))]
+        prefixes = ('output_', 'monitor_') if direction == 'out' else ('input_', 'playback_')
+        result = []
+        for port in ids:
+            port_direction = str(props(self.ports[port]).get('port.direction') or '').lower()
+            if port_direction == direction or not port_direction and self.port_name(port).startswith(prefixes):
+                result.append(port)
+        return result
+
+    def node_identity(self, node_id):
+        serial = props(self.nodes.get(node_id, {})).get('object.serial')
+        return f'{self.cookie}:{serial}' if self.cookie is not None and serial is not None else None
+
+    def is_steam_node(self, node):
+        client = props(self.clients.get(number(node.get('client.id')), {}))
+        for metadata in (node, client):
+            for key in ('application.name', 'application.id', 'application.process.binary',
+                        'pipewire.access.portal.app_id'):
+                identity = str(metadata.get(key) or '').rsplit('/', 1)[-1].strip().casefold()
+                if identity in STEAM_IDENTITIES:
+                    return True
+        return False
 
     def is_steam_capture_candidate(self, node_id):
         p = props(self.nodes.get(node_id, {}))
-        if p.get('media.class') != 'Stream/Input/Audio':
+        if p.get('media.class') != 'Stream/Input/Audio' or not self.is_steam_node(p):
             return False
-        media = str(p.get('media.name', '')).lower()
-        if any(label in media for label in ('audio recorder', 'voiceengine', 'microphone')):
+        media = str(p.get('media.name', '')).casefold()
+        name = str(p.get('node.name', '')).casefold()
+        role = str(p.get('media.role', '')).casefold()
+        if role in ('communication', 'phone', 'voice') or any(
+            label in media for label in ('audio recorder', 'voice', 'microphone')
+        ):
             return False
-        return any('steam' in str(p.get(key, '')).lower() for key in (
-            'node.name', 'media.name', 'application.name',
-            'application.process.binary', 'application.id', 'node.description',
-        ))
+        return (media in ('steam', 'game recording', 'steam game recording', 'steam recording') or name == 'steam'
+                or role == 'game' and p.get('stream.capture.sink') in (True, 'true', '1'))
+
+    def is_monitor_output(self, port):
+        return (self.port_name(port).startswith('monitor_')
+                or props(self.nodes.get(self.port_node(port), {})).get('media.class') == 'Audio/Sink')
+
+    def default_monitor_for(self, target):
+        target_channel = channel(self.ports[target])
+        if not self.default_sink or not target_channel:
+            return None
+        matches = [port for node_id, node in self.nodes.items()
+                   if props(node).get('media.class') == 'Audio/Sink'
+                   and props(node).get('node.name') == self.default_sink
+                   for port in self.ports_for(node_id, 'out') if channel(self.ports[port]) == target_channel]
+        return matches[0] if len(matches) == 1 else None
 
     def steam_capture(self):
-        best = None
-        best_score = 0
-        for node_id, node in self.nodes.items():
-            if not self.is_steam_capture_candidate(node_id):
-                continue
-            p = props(node)
-            name = str(p.get('node.name', '')).lower()
-            media = str(p.get('media.name', '')).lower()
-            score = 10
-            if media == 'steam' or name == 'steam' or name.startswith('steam-') and media == 'steam':
-                score += 50
-            inputs = set(self.ports_for(node_id, 'in'))
-            for output, input_port in self.links.values():
-                if input_port not in inputs:
-                    continue
-                upstream_port = self.ports.get(output)
-                if not upstream_port:
-                    continue
-                upstream_node = self.nodes.get(number(props(upstream_port).get('node.id')), {})
-                upstream_class = props(upstream_node).get('media.class', '')
-                if upstream_class == 'Audio/Sink' or self.port_name(output).startswith('monitor_'):
-                    score += 80
-                    break
-            if score > best_score:
-                best = node_id
-                best_score = score
-        return best if best_score >= 60 else None
+        monitored_nodes = {self.port_node(target) for source, target in self.links.values()
+                           if self.is_monitor_output(source)}
+        candidates = [node for node in monitored_nodes if self.is_steam_capture_candidate(node)]
+        return candidates[0] if len(candidates) == 1 else None
 
     def steam_microphone_inputs(self):
-        # Steam Game Recording opens a separate input for the microphone.
         inputs = {}
         for node_id, node in self.nodes.items():
             p = props(node)
@@ -157,18 +189,14 @@ class Graph:
                     or str(p.get('media.name', '')).casefold() != 'audio recorder'
                     or str(p.get('media.role', '')).casefold() != 'game'):
                 continue
-            identities = (
-                str(p.get('application.name', '')).casefold(),
-                str(p.get('application.id', '')).casefold(),
-                str(p.get('application.process.binary', '')).rsplit('/', 1)[-1].casefold(),
-            )
-            serial = p.get('object.serial')
-            if serial is not None and {'steam', 'com.valvesoftware.steam'}.intersection(identities):
-                inputs[f'{self.cookie}:{serial}'] = node_id
+            identity = self.node_identity(node_id)
+            if identity and self.is_steam_node(p):
+                inputs[identity] = node_id
         return inputs
 
     def input_mute(self, node_id):
-        for entry in self.nodes[node_id]['info'].get('params', {}).get('Props', []):
+        params = (self.nodes[node_id].get('info') or {}).get('params') or {}
+        for entry in params.get('Props') or []:
             mute = entry.get('mute')
             if isinstance(mute, bool):
                 return mute
@@ -194,9 +222,9 @@ class Graph:
         name = str(device.get('node.description') or device.get('node.nick') or '')
         return Source(MICROPHONE_KEY, name, icon='audio-input-microphone')
 
-    def sources(self):
+    def sources(self, details=True):
         found = {}
-        applications = ApplicationResolver()
+        applications = ApplicationResolver() if details else None
         for node_id, node in self.nodes.items():
             p = props(node)
             if p.get('media.class') != 'Stream/Output/Audio':
@@ -221,6 +249,8 @@ class Graph:
                 key = str(node_id)
             source = found.setdefault(key, Source(key, label))
             source.nodes.add(node_id)
+            if applications is None:
+                continue
             client = props(self.clients.get(number(p.get('client.id')), {}))
             for metadata in (p, client):
                 pid = number(metadata.get('application.process.id'))
@@ -250,21 +280,20 @@ class Graph:
         node = self.nodes.get(number(props(port).get('node.id')))
         if node is None:
             return None
-        return (str(props(node).get('node.name', '')), self.port_name(port_id))
+        node_name = props(node).get('node.name')
+        port_name = self.port_name(port_id)
+        return (str(node_name), port_name) if node_name and port_name else None
 
-    def resolve_ref(self, ref):
-        if not ref:
-            return None
+    def resolve_ref(self, ref, direction, parent=None):
         node_name, port_name = ref
-        for node_id, node in self.nodes.items():
-            if str(props(node).get('node.name', '')) == node_name:
-                for port_id in self.node_ports.get(node_id, []):
-                    if self.port_name(port_id) == port_name:
-                        return port_id
-        return None
+        nodes = self.nodes if parent is None else (parent,)
+        matches = [port for node_id in nodes
+                   if str(props(self.nodes.get(node_id, {})).get('node.name', '')) == node_name
+                   for port in self.ports_for(node_id, direction) if self.port_name(port) == port_name]
+        return matches[0] if len(matches) == 1 else None
 
     def desired_pairs(self, steam_id, sources, muted):
-        target_ports = self.ports_for(steam_id, 'in')
+        target_ports = sorted(self.ports_for(steam_id, 'in'))
         targets = defaultdict(list)
         for target in target_ports:
             targets[channel(self.ports[target])].append(target)
@@ -276,54 +305,69 @@ class Graph:
                 continue
             for node in source.nodes:
                 output_ports = sorted(self.ports_for(node, 'out'))
+                channels = [channel(self.ports[port]) for port in output_ports]
                 for index, output in enumerate(output_ports):
-                    ch = channel(self.ports[output])
+                    ch = channels[index]
                     dests = targets.get(ch, []) if ch else []
-                    if ch == 'MONO':
-                        dests = targets.get('MONO', []) or (targets.get('FL', []) + targets.get('FR', []))
-                    if not dests and len(output_ports) == 1:
-                        dests = target_ports
-                    elif not dests and not ch and index < len(target_ports):
-                        dests = [sorted(target_ports, key=lambda t: (channel(self.ports[t]) != 'FL', t))[index]]
+                    if not dests and ch == 'MONO':
+                        dests = targets.get('FL', []) + targets.get('FR', [])
+                    elif not dests and ch in ('FL', 'FR'):
+                        dests = targets.get('MONO', [])
+                    if not dests and len(output_ports) == 1 and not ch:
+                        dests = targets.get('MONO', []) or targets.get('FL', []) + targets.get('FR', [])
+                    if not dests and len(output_ports) == len(target_ports) and (
+                        not any(channels) or not any(targets)
+                    ):
+                        dests = [target_ports[index]]
                     for target in dests:
                         desired.add((output, target))
         return desired
 
 
 class AudioController:
-    def __init__(self):
+    def __init__(self, checkpoint=lambda: None):
         self.steam_id = None
+        self.steam_identity = None
         self.muted = set()
         self.microphone_muted = False
-        self.microphone_mutes = set()  # Capture streams muted by the widget.
+        self.microphone_mutes = set()
         self.microphone_active = False
         self.sources = {}
         self.is_active = False
         self.routing = False
+        self.restoring = False
+        self.legacy_links = False
         self.original = []
         self.error = ''
         self._graph = None
+        self._checkpoint = checkpoint
 
-    def refresh(self):
+    def matches_capture(self, graph):
+        if not graph.is_steam_capture_candidate(self.steam_id):
+            return False
+        if self.steam_identity is not None:
+            return graph.node_identity(self.steam_id) == self.steam_identity
+        inputs = {graph.port_ref(port) for port in graph.ports_for(self.steam_id, 'in')}
+        return any(target in inputs for _, target in self.original) or (
+            not self.original and graph.steam_capture() == self.steam_id
+        )
+
+    def refresh(self, details=True):
         try:
             graph = Graph.read()
             self._graph = graph
             steam = graph.steam_capture()
-            previous_capture = graph.is_steam_capture_candidate(self.steam_id)
-            if steam is None and previous_capture:
-                steam = self.steam_id
-            if steam != self.steam_id:
-                if self.routing and previous_capture:
+            if self.routing:
+                if self.matches_capture(graph) and steam in (None, self.steam_id):
+                    steam = self.steam_id
+                    self.steam_identity = graph.node_identity(steam)
+                else:
                     self.restore(graph)
-                if self.steam_id is not None:
-                    self.muted.clear()
-                    self.microphone_muted = False
+            if not self.routing:
                 self.steam_id = steam
-                self.routing = False
-                self.original = []
-                self.error = ''
+                self.steam_identity = graph.node_identity(steam)
             self.is_active = steam is not None
-            self.sources = graph.sources()
+            self.sources = graph.sources(details)
             microphone_inputs = graph.steam_microphone_inputs()
             microphone = graph.microphone(microphone_inputs.values())
             if microphone is not None:
@@ -331,35 +375,37 @@ class AudioController:
             self.microphone_active = self.is_active and any(
                 graph.input_mute(node_id) is not None for node_id in microphone_inputs.values()
             )
-        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-            self.error = str(exc)[:180]
+            return True
+        except PIPEWIRE_ERRORS as exc:
+            self.error = self.error or str(exc)[:180]
             self._graph = None
             self.is_active = False
             self.microphone_active = False
             self.sources = {}
+            return False
 
     def is_muted(self, key):
         return self.microphone_muted if key == MICROPHONE_KEY else key in self.muted
 
     def set_muted(self, key, mute):
-        self.error = ''
         if key == MICROPHONE_KEY:
             self.microphone_muted = mute
-            return
-        if mute:
+        elif mute:
             self.muted.add(key)
         else:
             self.muted.discard(key)
 
     def reset(self):
-        self.error = ''
         self.muted.clear()
         self.microphone_muted = False
 
     def apply_mutes(self):
         if self._graph is None:
             return
-        if self.is_active and self.muted.intersection(self.sources):
+        if self.routing and self.restoring:
+            if not self.error:
+                self.restore(self._graph)
+        elif self.is_active and self.muted.intersection(self.sources):
             self.reconcile(self._graph)
         elif self.routing:
             self.restore(self._graph)
@@ -368,68 +414,127 @@ class AudioController:
 
     def update_microphone(self, graph, mute):
         inputs = graph.steam_microphone_inputs()
-        self.microphone_mutes.intersection_update(inputs)
         try:
+            if graph.cookie is None:
+                raise RuntimeError('Cannot identify the PipeWire server')
+            present = {graph.node_identity(node_id) for node_id in graph.nodes}
+            self.microphone_mutes.intersection_update(present)
+            if not self.microphone_mutes.issubset(inputs):
+                raise RuntimeError('Cannot verify a microphone stream previously muted by the widget')
             for capture, node_id in inputs.items():
                 current = graph.input_mute(node_id)
                 if mute and current is False:
-                    run('pw-cli', 'set-param', str(node_id), 'Props', '{ mute: true }')
                     self.microphone_mutes.add(capture)
+                    self._checkpoint()
+                    run('pw-cli', 'set-param', str(node_id), 'Props', '{ mute: true }')
                 elif not mute and capture in self.microphone_mutes:
-                    if current is not False:
+                    if current is None:
+                        raise RuntimeError('Microphone mute state is unavailable')
+                    if current:
                         run('pw-cli', 'set-param', str(node_id), 'Props', '{ mute: false }')
                     self.microphone_mutes.remove(capture)
-        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        except PIPEWIRE_ERRORS as exc:
             self.error = self.error or 'Microphone control: ' + str(exc)[:140]
 
     def reconcile(self, graph):
-        if self.steam_id is None:
+        if self.steam_identity is None or not self.matches_capture(graph):
+            self.error = 'Cannot verify the Steam recording stream'
             return
         try:
             current = graph.input_pairs(self.steam_id)
-            if not self.routing:
-                self.original = [(graph.port_ref(src), graph.port_ref(dst)) for src, dst in current.values()]
-                self.original = [(src, dst) for src, dst in self.original if src and dst]
-                self.routing = True
             desired = graph.desired_pairs(self.steam_id, self.sources, self.muted)
+            audible_nodes = {node for key, source in self.sources.items() if key not in self.muted
+                             for node in source.nodes}
+            if not audible_nodes.issubset({graph.port_node(source) for source, _ in desired}):
+                raise RuntimeError('Some audio sources have no matching Steam recording port')
+            if not self.routing:
+                inputs = set(graph.ports_for(self.steam_id, 'in'))
+                monitored = {target for source, target in current.values() if graph.is_monitor_output(source)}
+                original = {(graph.port_ref(source), graph.port_ref(target)) for source, target in current.values()}
+                if not inputs or not inputs.issubset(monitored) or any(not src or not dst for src, dst in original):
+                    raise RuntimeError('Steam system audio connections are not ready')
+                self.original = sorted(original)
+                self.routing = True
+                self._checkpoint()
             actual = set(current.values())
-            for link_id, pair in current.items():
-                if pair not in desired:
+            for source, target in sorted(desired - actual):
+                connect_ports(source, target, managed=True)
+            kept = set()
+            for link_id in sorted(current, key=lambda ident: (ident in graph.managed_links, ident)):
+                pair = current[link_id]
+                if pair in desired and pair not in kept:
+                    kept.add(pair)
+                else:
                     run('pw-link', '-d', str(link_id))
-            for source_port, target_port in sorted(desired - actual):
-                run('pw-link', str(source_port), str(target_port))
-            self.error = ''
-        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        except PIPEWIRE_ERRORS as exc:
+            if self.routing:
+                self.restore()
             message = 'Audio routing: ' + str(exc)[:140]
-            self.muted.clear()
-            self.restore()
-            self.error = message
+            self.error = message + ('; ' + self.error if self.error else '')
 
     def restore(self, graph=None):
         if not self.routing:
             return
         try:
             graph = graph or Graph.read()
-            if self.steam_id is None or self.steam_id not in graph.nodes:
-                self.routing = False
-                self.original = []
+            if graph.cookie is None:
+                raise RuntimeError('Cannot identify the PipeWire server')
+            if not self.matches_capture(graph):
+                identity = graph.node_identity(self.steam_id)
+                if self.steam_id in graph.nodes and (
+                    identity == self.steam_identity or identity is None
+                    or self.steam_identity is None and graph.is_steam_capture_candidate(self.steam_id)
+                ):
+                    raise RuntimeError('Cannot verify the original Steam recording stream')
+                self.clear_routing()
                 return
-            old_pairs = set()
-            for output_ref, input_ref in self.original:
-                output = graph.resolve_ref(output_ref)
-                input_port = graph.resolve_ref(input_ref)
-                if output is not None and input_port is not None:
-                    old_pairs.add((output, input_port))
+
+            self.steam_identity = graph.node_identity(self.steam_id)
+            self.restoring = True
+            self._checkpoint()
             current = graph.input_pairs(self.steam_id)
-            for source_port, target_port in sorted(old_pairs - set(current.values())):
-                run('pw-link', str(source_port), str(target_port))
-            for link_id, pair in current.items():
-                if pair not in old_pairs:
+            linked = set(current.values())
+            original = {(graph.resolve_ref(src, 'out'), graph.resolve_ref(dst, 'in', self.steam_id))
+                        for src, dst in self.original}
+            monitored = {target for source, target in linked - original if graph.is_monitor_output(source)}
+            original_monitored = {target for source, target in original
+                                  if source is not None and target is not None and graph.is_monitor_output(source)}
+            missing = {target for source, target in original if target is None
+                       or source is None and target not in monitored and target not in original_monitored}
+            for source, target in original - linked:
+                if source is not None and target is not None and (
+                    target not in monitored or not graph.is_monitor_output(source)
+                ):
+                    connect_ports(source, target)
+
+            for target in missing - {None}:
+                monitor = graph.default_monitor_for(target)
+                if monitor is not None:
+                    if (monitor, target) not in linked and (monitor, target) not in original:
+                        connect_ports(monitor, target)
+                    missing.remove(target)
+
+            if not original:
+                missing.update(set(graph.ports_for(self.steam_id, 'in')) - monitored)
+                if not monitored:
+                    missing.add(None)
+
+            for link_id, (source, target) in current.items():
+                if target in missing or (source, target) in original:
+                    continue
+                source_class = props(graph.nodes.get(graph.port_node(source), {})).get('media.class')
+                if link_id in graph.managed_links or self.legacy_links and source_class == 'Stream/Output/Audio':
                     run('pw-link', '-d', str(link_id))
-            self.routing = False
-            self.original = []
-            self.error = ''
-        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+
+            if missing:
+                raise RuntimeError('Some original Steam audio ports are unavailable')
+            self.clear_routing()
+        except PIPEWIRE_ERRORS as exc:
+            self.restoring = True
             self.error = 'Restore failed: ' + str(exc)[:140]
 
-
+    def clear_routing(self):
+        self.routing = False
+        self.restoring = False
+        self.legacy_links = False
+        self.original = []

@@ -4,9 +4,9 @@ Steam Recording Audio Control is a KDE Plasma 6 system tray widget that lets you
 
 ## Requirements
 
-- KDE Plasma 6 with `kpackagetool6`
+- KDE Plasma 6 with `kpackagetool6` and the Plasma5Support executable data engine
 - PipeWire with `pw-dump`, `pw-link`, and `pw-cli`
-- Git and Python 3
+- Git, Python 3, and Coreutils
 - Steam with Game Recording enabled
 
 ## Install
@@ -27,7 +27,7 @@ Run this from your existing clone on the `main` branch.
 git pull --ff-only origin main && ./install.sh
 ```
 
-The installer upgrades the widget in place, removes obsolete package files and the old widget icon cache, and keeps your saved mute selections. Both installation and updates can restart Plasma Shell to load the widget.
+The installer upgrades the widget in place, removes obsolete package files and the old widget icon cache, and keeps your saved mute selections. If the installer restarts Plasma Shell, it restores Steam's audio connections first.
 
 ## Usage
 

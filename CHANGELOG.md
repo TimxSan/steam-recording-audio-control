@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound memory use during background polling and release the window lookup and source icons when the popup closes.
+- Keep mute controls responsive during slow or failed requests and refresh the hover highlight when rows move or disappear.
+- Save Steam's original capture connections before changing them, keep recovery data on failure, and restore the system mix when the original audio device changes.
+- Restore Steam audio before upgrading or uninstalling and keep both scripts scoped to this widget.
 - Added this changelog and documented how to keep it up to date.
 - Restored the hide, show, and mute button icons and use bundled category icons only when the application icon cannot be displayed.
 - Show all audio sources by default and preserve manually hidden sources across restarts.
