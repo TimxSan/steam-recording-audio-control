@@ -45,7 +45,7 @@ Run this from the cloned repository.
 ./uninstall.sh
 ```
 
-Uninstallation restores Steam recording audio and removes the widget, tray icon, saved preferences, session state, and any Steam-specific icon cache from older installations. If audio restoration fails, the script stops and keeps the recovery state. The legacy icon cache shared with Discord Stream Audio Control is preserved.
+Uninstallation restores Steam recording audio and removes the widget, tray icon, saved preferences, session state, and any Steam-specific icon cache from older installations. If audio restoration fails, the script stops and keeps the recovery state.
 
 ## License
 
