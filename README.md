@@ -46,7 +46,3 @@ Run this from the cloned repository.
 ```
 
 Uninstallation restores Steam recording audio and removes the widget, tray icon, saved preferences, session state, and any Steam-specific icon cache from older installations. If audio restoration fails, the script stops and keeps the recovery state.
-
-## License
-
-[MIT](LICENSE)
