@@ -27,7 +27,7 @@ Run this from your existing clone on the `main` branch.
 git pull --ff-only origin main && ./install.sh
 ```
 
-The installer upgrades the widget in place and keeps your saved mute selections. Both installation and updates can restart Plasma Shell to load the widget.
+The installer upgrades the widget in place, removes obsolete package files and the old widget icon cache, and keeps your saved mute selections. Both installation and updates can restart Plasma Shell to load the widget.
 
 ## Usage
 

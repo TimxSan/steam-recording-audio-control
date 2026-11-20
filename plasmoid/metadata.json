@@ -5,7 +5,7 @@
     "Description": "Mute individual audio sources in Steam recordings",
     "Icon": "org.cachy.steamaudiocontrol",
     "Category": "Multimedia",
-    "Version": "1.0.12",
+    "Version": "1.0.13",
     "License": "MIT",
     "EnabledByDefault": true,
     "ServiceTypes": [
