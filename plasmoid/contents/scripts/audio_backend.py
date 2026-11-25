@@ -352,7 +352,7 @@ class AudioController:
             not self.original and graph.steam_capture() == self.steam_id
         )
 
-    def refresh(self, details=True):
+    def refresh(self):
         try:
             graph = Graph.read()
             self._graph = graph
@@ -367,13 +367,8 @@ class AudioController:
                 self.steam_id = steam
                 self.steam_identity = graph.node_identity(steam)
             self.is_active = steam is not None
-            self.sources = graph.sources(details)
-            microphone_inputs = graph.steam_microphone_inputs()
-            microphone = graph.microphone(microphone_inputs.values())
-            if microphone is not None:
-                self.sources[microphone.key] = microphone
             self.microphone_active = self.is_active and any(
-                graph.input_mute(node_id) is not None for node_id in microphone_inputs.values()
+                graph.input_mute(node_id) is not None for node_id in graph.steam_microphone_inputs().values()
             )
             return True
         except PIPEWIRE_ERRORS as exc:
@@ -383,6 +378,14 @@ class AudioController:
             self.microphone_active = False
             self.sources = {}
             return False
+
+    def load_sources(self, details, include_microphone=False):
+        graph = self._graph
+        self.sources = graph.sources(details)
+        if details or include_microphone:
+            microphone = graph.microphone(graph.steam_microphone_inputs().values())
+            if microphone is not None:
+                self.sources[microphone.key] = microphone
 
     def is_muted(self, key):
         return self.microphone_muted if key == MICROPHONE_KEY else key in self.muted

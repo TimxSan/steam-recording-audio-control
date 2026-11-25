@@ -124,7 +124,7 @@ def process(action, key, desired=None, details=True, suspend=False, widget=False
             return {'active': False, 'microphoneActive': False, 'error': ''}
 
         settings = load(CONFIG_FILE, {})
-        refreshed = ctl.refresh(details)
+        refreshed = ctl.refresh()
 
         muted = string_set(settings.get('muted'))
         if 'muted' not in settings and ctl.is_active and ctl.steam_id == state.get('steam_id'):
@@ -132,7 +132,11 @@ def process(action, key, desired=None, details=True, suspend=False, widget=False
         ctl.muted = muted - {MICROPHONE_KEY}
         ctl.microphone_muted = MICROPHONE_KEY in muted
 
-        changed_mutes = action == 'reset' or (action in ('mute', 'set-muted') and key in ctl.sources)
+        editing_source = action in ('mute', 'set-muted')
+        if refreshed and (details or editing_source or (ctl.is_active and ctl.muted and action != 'reset')):
+            ctl.load_sources(details, include_microphone=editing_source and key == MICROPHONE_KEY)
+
+        changed_mutes = action == 'reset' or (editing_source and key in ctl.sources)
         if changed_mutes:
             if action == 'reset':
                 ctl.reset()
@@ -152,12 +156,12 @@ def process(action, key, desired=None, details=True, suspend=False, widget=False
         result = {
             'active': ctl.is_active,
             'hasMutes': bool(muted),
-            'hasUnlistedMutes': bool(muted.difference(ctl.sources)),
             'microphoneActive': ctl.microphone_active,
             'error': ctl.error,
         }
         if not details:
             return result
+        result['hasUnlistedMutes'] = bool(muted.difference(ctl.sources))
         apps = [
             {
                 'key': key,

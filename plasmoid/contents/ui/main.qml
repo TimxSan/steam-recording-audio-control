@@ -184,12 +184,13 @@ PlasmoidItem {
 
     function startRequest(edit) {
         var key = edit.key ? hexEncode(edit.key) : "''";
-        var routingOnly = edit.action === "status" && !showDetails;
+        var routingOnly = !showDetails;
         var command = "/usr/bin/timeout -k 2s 30s /usr/bin/python3 -B " + quote(backendPath)
                       + " " + edit.action + " " + key + " " + Plasmoid.id + " --widget";
         if (edit.action === "set-muted") {
             command += edit.muted ? " --muted" : " --unmuted";
-        } else if (routingOnly) {
+        }
+        if (routingOnly) {
             command += " --routing-only";
         }
         activeRequest = backendRequest.createObject(root, { command: command, edit: edit, routingOnly: routingOnly });
@@ -216,7 +217,7 @@ PlasmoidItem {
                 if (typeof response.active === "boolean") {
                     recordingActive = response.active;
                     microphoneActive = Boolean(response.microphoneActive);
-                    if (Array.isArray(response.apps)) {
+                    if (showDetails && Array.isArray(response.apps)) {
                         apps = response.apps;
                         detailsLoaded = true;
                         hasUnlistedMutes = Boolean(response.hasUnlistedMutes);
@@ -284,7 +285,7 @@ PlasmoidItem {
     }
 
     Timer {
-        interval: 1300
+        interval: root.showDetails || root.recordingActive ? 1300 : 5000
         repeat: true
         running: true
         onTriggered: root.request("status", "")
@@ -293,6 +294,11 @@ PlasmoidItem {
     onShowDetailsChanged: {
         if (showDetails) {
             request("status", "");
+        } else {
+            apps = [];
+            detailsLoaded = false;
+            hasUnlistedMutes = false;
+            visibleRows.clear();
         }
     }
 

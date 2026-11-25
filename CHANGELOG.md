@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Load the source list and icons only while the popup is open. Check for recordings less often while idle and scan playback streams in the background only when needed for mute control.
 - Bound memory use during background polling and release the window lookup and source icons when the popup closes.
 - Keep mute controls responsive during slow or failed requests and refresh the hover highlight when rows move or disappear.
 - Save Steam's original capture connections before changing them, keep recovery data on failure, and restore the system mix when the original audio device changes.

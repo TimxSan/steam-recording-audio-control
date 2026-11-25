@@ -33,6 +33,8 @@ The installer upgrades the widget in place, removes obsolete package files and t
 
 Open the widget from the system tray and toggle the mute icon next to an app or the microphone. The list shows detected sources even while Steam is idle. App icons are used when available, with bundled category icons as a fallback.
 
+The source list and icons load while the popup is open. With the popup closed, the widget still detects recordings and updates routing for saved mutes.
+
 Mute selections are saved automatically and applied when Steam records those sources. Select **Include all audio** to clear all saved mutes.
 
 ## Uninstall
